@@ -36,23 +36,16 @@ try:
         st.error("No data fetched. Check internet or ticker symbols.")
         st.stop()
 
-    # Handle column formats
+    # Handle column format safely
     if isinstance(raw_data.columns, pd.MultiIndex):
-        if "Adj Close" in raw_data.columns.levels[0]:
-            data = raw_data["Adj Close"]
-        else:
-            data = raw_data["Close"]
+        data = raw_data["Adj Close"] if "Adj Close" in raw_data.columns.levels[0] else raw_data["Close"]
     else:
-        if "Adj Close" in raw_data.columns:
-            data = raw_data["Adj Close"]
-        else:
-            data = raw_data["Close"]
+        data = raw_data["Adj Close"] if "Adj Close" in raw_data.columns else raw_data["Close"]
 
     data = data.dropna()
 
 except Exception as e:
     st.error(f"Error fetching data: {e}")
-    st.write("Columns:", raw_data.columns if 'raw_data' in locals() else "No data")
     st.stop()
 
 # -----------------------------
@@ -67,10 +60,15 @@ except KeyError:
     st.stop()
 
 # -----------------------------
-# RETURNS
+# RETURNS (ALIGNED CLEAN DATA)
 # -----------------------------
-returns = stock_data.pct_change().dropna()
-benchmark_returns = benchmark_data.pct_change().dropna()
+returns = stock_data.pct_change()
+benchmark_returns = benchmark_data.pct_change()
+
+returns, benchmark_returns = returns.align(benchmark_returns, join="inner", axis=0)
+
+returns = returns.dropna()
+benchmark_returns = benchmark_returns.dropna()
 
 # -----------------------------
 # KPI DASHBOARD
@@ -80,11 +78,10 @@ st.subheader("📊 Portfolio Overview")
 weights_equal = np.array([1/len(stocks)] * len(stocks))
 
 portfolio_return = np.sum(returns.mean() * weights_equal) * 252
-portfolio_vol = np.sum(returns.std() * weights_equal) * np.sqrt(252)
-portfolio_sharpe = portfolio_return / portfolio_vol
+portfolio_vol = np.sqrt(np.dot(weights_equal.T, np.dot(returns.cov()*252, weights_equal)))
+portfolio_sharpe = portfolio_return / portfolio_vol if portfolio_vol != 0 else 0
 
 col1, col2, col3 = st.columns(3)
-
 col1.metric("📈 Return", f"{portfolio_return:.2%}")
 col2.metric("⚠️ Volatility", f"{portfolio_vol:.2%}")
 col3.metric("⭐ Sharpe", f"{portfolio_sharpe:.2f}")
@@ -142,22 +139,24 @@ plt.xticks(range(len(corr.columns)), corr.columns, rotation=45)
 plt.yticks(range(len(corr.columns)), corr.columns)
 
 fig.colorbar(cax)
-
 st.pyplot(fig)
 
 st.markdown("---")
 
 # -----------------------------
-# BETA
+# BETA (SAFE)
 # -----------------------------
 st.subheader("📉 Beta")
 
 beta = {}
 market_var = np.var(benchmark_returns.squeeze())
 
-for stock in returns.columns:
-    cov = np.cov(returns[stock], benchmark_returns.squeeze())[0][1]
-    beta[stock] = cov / market_var
+if market_var == 0:
+    st.error("Market variance is zero")
+else:
+    for stock in returns.columns:
+        cov = np.cov(returns[stock], benchmark_returns.squeeze())[0][1]
+        beta[stock] = cov / market_var
 
 beta = pd.Series(beta)
 st.dataframe(beta)
@@ -170,7 +169,9 @@ st.subheader("📊 CAPM")
 risk_free_rate = st.slider("Risk-Free Rate", 0.03, 0.08, 0.06)
 
 market_return = benchmark_returns.mean() * 252
+
 capm = risk_free_rate + beta * (market_return - risk_free_rate)
+capm = capm.replace([np.inf, -np.inf], np.nan).dropna()
 
 st.dataframe(capm)
 
@@ -179,7 +180,9 @@ st.dataframe(capm)
 # -----------------------------
 st.subheader("⭐ Alpha")
 
-alpha = (returns.mean() * 252) - capm
+actual_return = returns.mean() * 252
+alpha = (actual_return - capm).dropna()
+
 st.dataframe(alpha)
 
 st.markdown("---")
